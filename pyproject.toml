@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nightscout-dashboard"
+version = "1.0.0"
+description = "Web dashboard for Nightscout glucose data"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "flask>=2.0.0",
+    "requests>=2.25.0",
+]
+
+[project.scripts]
+nightscout-dash = "nightscout_dash.main:main"
