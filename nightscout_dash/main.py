@@ -6,11 +6,28 @@ from flask import Flask, jsonify, render_template_string
 import requests
 import os
 import argparse
+import json
+from pathlib import Path
 
 # Configuration defaults
-DEFAULT_NIGHTSCOUT_HOST = os.environ.get("NIGHTSCOUT_HOST", "127.0.0.1")
-DEFAULT_NIGHTSCOUT_PORT = os.environ.get("NIGHTSCOUT_PORT", "80")
-DEFAULT_API_SECRET = os.environ.get("NIGHTSCOUT_API_SECRET", "")
+DEFAULT_NIGHTSCOUT_PORT = "80"
+DEFAULT_USER_TOKEN = os.environ.get("NIGHTSCOUT_USER_TOKEN", "")
+
+def load_credentials(credential_file):
+    """Load credentials from a JSON file
+    
+    Expected format:
+    {
+        "user_token": "your-api-secret-or-token-here"
+    }
+    """
+    try:
+        with open(credential_file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise ValueError(f"Credential file not found: {credential_file}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in credential file: {e}")
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -137,14 +154,14 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def create_app(nightscout_host, nightscout_port, api_secret):
+def create_app(nightscout_host, nightscout_port, user_token):
     """Create and configure the Flask app"""
     app = Flask(__name__)
     
     # Store config in app
     app.config['NIGHTSCOUT_HOST'] = nightscout_host
     app.config['NIGHTSCOUT_PORT'] = nightscout_port
-    app.config['API_SECRET'] = api_secret
+    app.config['USER_TOKEN'] = user_token
     
     @app.route('/')
     def index():
@@ -156,11 +173,11 @@ def create_app(nightscout_host, nightscout_port, api_secret):
         """API endpoint to fetch latest glucose value"""
         try:
             url = f"http://{app.config['NIGHTSCOUT_HOST']}:{app.config['NIGHTSCOUT_PORT']}/api/v1/entries.json"
-            headers = {"API-SECRET": app.config['API_SECRET']}
+            headers = {"API-SECRET": app.config['USER_TOKEN']}
             params = {"count": 1}
             
             print(f"Fetching from: {url}")
-            print(f"Using API-SECRET: {app.config['API_SECRET'][:10]}..." if app.config['API_SECRET'] else "No API secret set!")
+            print(f"Using user token: {app.config['USER_TOKEN'][:10]}..." if app.config['USER_TOKEN'] else "No user token set!")
             
             response = requests.get(url, headers=headers, params=params, timeout=10)
             
@@ -210,19 +227,34 @@ def main():
     # Optional arguments
     parser.add_argument('--port', type=int, default=5000,
                        help='Port to bind to (default: 5000)')
-    parser.add_argument('--nightscout-port', default=DEFAULT_NIGHTSCOUT_PORT,
-                       help=f'Nightscout port (default: {DEFAULT_NIGHTSCOUT_PORT}, or NIGHTSCOUT_PORT env var)')
-    parser.add_argument('--api-secret', default=DEFAULT_API_SECRET,
-                       help='API secret (default: from NIGHTSCOUT_API_SECRET env var)')
+    parser.add_argument('--nightscout-port', default=None,
+                       help=f'Nightscout port (default: {DEFAULT_NIGHTSCOUT_PORT})')
+    parser.add_argument('--credential-file', type=str,
+                       help='Path to JSON file containing user_token')
     parser.add_argument('--debug', action='store_true',
                        help='Run in debug mode')
     
     args = parser.parse_args()
     
-    app = create_app(args.nightscout_server, args.nightscout_port, args.api_secret)
+    nightscout_server = args.nightscout_server
+    nightscout_port = args.nightscout_port or DEFAULT_NIGHTSCOUT_PORT
+    
+    # Load user_token from credential file if provided, otherwise use env var
+    if args.credential_file:
+        try:
+            creds = load_credentials(args.credential_file)
+            user_token = creds.get('user_token', '')
+            if not user_token:
+                parser.error("credential file must contain 'user_token' field")
+        except ValueError as e:
+            parser.error(str(e))
+    else:
+        user_token = DEFAULT_USER_TOKEN
+    
+    app = create_app(nightscout_server, nightscout_port, user_token)
     
     print(f"Starting Nightscout Dashboard on http://{args.bind_ip}:{args.port}")
-    print(f"Connecting to Nightscout at {args.nightscout_server}:{args.nightscout_port}")
+    print(f"Connecting to Nightscout at {nightscout_server}:{nightscout_port}")
     
     app.run(host=args.bind_ip, port=args.port, debug=args.debug)
 
