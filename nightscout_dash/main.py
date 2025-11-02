@@ -8,10 +8,53 @@ import os
 import argparse
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Configuration defaults
 DEFAULT_NIGHTSCOUT_PORT = "80"
 DEFAULT_USER_TOKEN = os.environ.get("NIGHTSCOUT_USER_TOKEN", "")
+DEFAULT_BIND_PORT = 5000
+
+def parse_bind_address(bind_address):
+    """Parse bind address in host or host:port format
+    
+    Returns: (host, port)
+    """
+    if ':' in bind_address:
+        host, port = bind_address.split(':', 1)
+        return host, int(port)
+    else:
+        return bind_address, DEFAULT_BIND_PORT
+
+def parse_nightscout_url(url_or_host):
+    """Parse nightscout server URL in various formats
+    
+    Supports:
+    - http://host:port/
+    - https://host:port/
+    - host:port
+    - host
+    
+    Returns: (scheme, host, port)
+    """
+    # If it starts with http:// or https://, parse as URL
+    if url_or_host.startswith('http://') or url_or_host.startswith('https://'):
+        parsed = urlparse(url_or_host)
+        scheme = parsed.scheme
+        host = parsed.hostname
+        port = parsed.port or (443 if scheme == 'https' else 80)
+    # If it contains :, treat as host:port
+    elif ':' in url_or_host:
+        host, port = url_or_host.split(':', 1)
+        scheme = 'http'
+        port = int(port)
+    # Otherwise just a hostname
+    else:
+        host = url_or_host
+        scheme = 'http'
+        port = 80
+    
+    return scheme, host, port
 
 def load_credentials(credential_file):
     """Load credentials from a JSON file
@@ -154,11 +197,12 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def create_app(nightscout_host, nightscout_port, user_token):
+def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token):
     """Create and configure the Flask app"""
     app = Flask(__name__)
     
     # Store config in app
+    app.config['NIGHTSCOUT_SCHEME'] = nightscout_scheme
     app.config['NIGHTSCOUT_HOST'] = nightscout_host
     app.config['NIGHTSCOUT_PORT'] = nightscout_port
     app.config['USER_TOKEN'] = user_token
@@ -172,7 +216,7 @@ def create_app(nightscout_host, nightscout_port, user_token):
     def get_glucose():
         """API endpoint to fetch latest glucose value"""
         try:
-            url = f"http://{app.config['NIGHTSCOUT_HOST']}:{app.config['NIGHTSCOUT_PORT']}/api/v1/entries.json"
+            url = f"{app.config['NIGHTSCOUT_SCHEME']}://{app.config['NIGHTSCOUT_HOST']}:{app.config['NIGHTSCOUT_PORT']}/api/v1/entries.json"
             headers = {"API-SECRET": app.config['USER_TOKEN']}
             params = {"count": 1}
             
@@ -219,16 +263,12 @@ def main():
     )
     
     # Mandatory arguments
-    parser.add_argument('bind_ip', 
-                       help='IP address to bind to (e.g., 0.0.0.0 or 127.0.0.1)')
+    parser.add_argument('bind_address', 
+                       help='Bind address (e.g., 0.0.0.0, 127.0.0.1, or 0.0.0.0:8080)')
     parser.add_argument('nightscout_server',
-                       help='Nightscout server hostname (e.g., glucose.example.com)')
+                       help='Nightscout server (e.g., http://host:port/, host:port, or host)')
     
     # Optional arguments
-    parser.add_argument('--port', type=int, default=5000,
-                       help='Port to bind to (default: 5000)')
-    parser.add_argument('--nightscout-port', default=None,
-                       help=f'Nightscout port (default: {DEFAULT_NIGHTSCOUT_PORT})')
     parser.add_argument('--credential-file', type=str,
                        help='Path to JSON file containing user_token')
     parser.add_argument('--production', action='store_true',
@@ -236,8 +276,11 @@ def main():
     
     args = parser.parse_args()
     
-    nightscout_server = args.nightscout_server
-    nightscout_port = args.nightscout_port or DEFAULT_NIGHTSCOUT_PORT
+    # Parse bind address
+    bind_host, bind_port = parse_bind_address(args.bind_address)
+    
+    # Parse the nightscout server URL
+    scheme, nightscout_host, nightscout_port = parse_nightscout_url(args.nightscout_server)
     
     # Load user_token from credential file if provided, otherwise use env var
     if args.credential_file:
@@ -251,17 +294,17 @@ def main():
     else:
         user_token = DEFAULT_USER_TOKEN
     
-    app = create_app(nightscout_server, nightscout_port, user_token)
+    app = create_app(scheme, nightscout_host, nightscout_port, user_token)
     
-    print(f"Starting Nightscout Dashboard on http://{args.bind_ip}:{args.port}")
-    print(f"Connecting to Nightscout at {nightscout_server}:{nightscout_port}")
+    print(f"Starting Nightscout Dashboard on http://{bind_host}:{bind_port}")
+    print(f"Connecting to Nightscout at {scheme}://{nightscout_host}:{nightscout_port}")
     
     if args.production:
         # Use waitress for production
         try:
             from waitress import serve
             print("Running in PRODUCTION mode with Waitress WSGI server")
-            serve(app, host=args.bind_ip, port=args.port)
+            serve(app, host=bind_host, port=bind_port)
         except ImportError:
             print("ERROR: waitress is not installed. Install with: pip install waitress")
             print("Or install nightscout-dash with: pip install --upgrade nightscout-dash")
@@ -271,7 +314,7 @@ def main():
         # Use Flask development server with debug always enabled
         print("Running in DEVELOPMENT mode (use --production for production)")
         print("Debug mode: ENABLED")
-        app.run(host=args.bind_ip, port=args.port, debug=True)
+        app.run(host=bind_host, port=bind_port, debug=True)
 
 if __name__ == '__main__':
     main()
