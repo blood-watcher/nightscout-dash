@@ -231,8 +231,10 @@ def main():
                        help=f'Nightscout port (default: {DEFAULT_NIGHTSCOUT_PORT})')
     parser.add_argument('--credential-file', type=str,
                        help='Path to JSON file containing user_token')
+    parser.add_argument('--production', action='store_true',
+                       help='Run with production WSGI server (waitress)')
     parser.add_argument('--debug', action='store_true',
-                       help='Run in debug mode')
+                       help='Run in debug mode (only applies to development server)')
     
     args = parser.parse_args()
     
@@ -256,7 +258,21 @@ def main():
     print(f"Starting Nightscout Dashboard on http://{args.bind_ip}:{args.port}")
     print(f"Connecting to Nightscout at {nightscout_server}:{nightscout_port}")
     
-    app.run(host=args.bind_ip, port=args.port, debug=args.debug)
+    if args.production:
+        # Use waitress for production
+        try:
+            from waitress import serve
+            print("Running in PRODUCTION mode with Waitress WSGI server")
+            serve(app, host=args.bind_ip, port=args.port)
+        except ImportError:
+            print("ERROR: waitress is not installed. Install with: pip install waitress")
+            print("Or install nightscout-dash with: pip install --upgrade nightscout-dash")
+            import sys
+            sys.exit(1)
+    else:
+        # Use Flask development server
+        print("Running in DEVELOPMENT mode (use --production for production)")
+        app.run(host=args.bind_ip, port=args.port, debug=args.debug)
 
 if __name__ == '__main__':
     main()
