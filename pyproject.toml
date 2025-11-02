@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "nightscout-dash"
-version = "1.0.5"
+version = "1.0.6"
 description = "Web dashboard for Nightscout glucose data"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,5 +16,6 @@ dependencies = [
 [project.scripts]
 nightscout-dash = "nightscout_dash.main:main"
 
-[tool.setuptools]
-packages = ["nightscout_dash"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nightscout_dash"]
