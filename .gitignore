@@ -7,4 +7,6 @@ coverage.xml
 .tox
 .eggs
 token
+
+credentials.json
 README.html
