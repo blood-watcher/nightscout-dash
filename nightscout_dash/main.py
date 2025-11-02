@@ -233,8 +233,6 @@ def main():
                        help='Path to JSON file containing user_token')
     parser.add_argument('--production', action='store_true',
                        help='Run with production WSGI server (waitress)')
-    parser.add_argument('--debug', action='store_true',
-                       help='Run in debug mode (only applies to development server)')
     
     args = parser.parse_args()
     
@@ -270,9 +268,10 @@ def main():
             import sys
             sys.exit(1)
     else:
-        # Use Flask development server
+        # Use Flask development server with debug always enabled
         print("Running in DEVELOPMENT mode (use --production for production)")
-        app.run(host=args.bind_ip, port=args.port, debug=args.debug)
+        print("Debug mode: ENABLED")
+        app.run(host=args.bind_ip, port=args.port, debug=True)
 
 if __name__ == '__main__':
     main()
