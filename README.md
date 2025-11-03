@@ -4,6 +4,13 @@ A periodically updatin dashboard to display glucose statistics from nightscout d
 I use this with an old always on tablet on my wall to allow me to very easily see these values exercising.  Nightscout is compatabile with freestyle libre devices with the [Juggluco](https://github.com/j-kaltes/Juggluco) mobile app.
 
 
+## Installation
+This tool is written in python. You can install this with pipx.
+
+```
+pipx install nightscout-dash
+```
+
 ## Usage
 Create  user token in nightscout and create a credentials file, `credentials.json` like so:
 
