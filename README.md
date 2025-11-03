@@ -1,7 +1,9 @@
 # nightscout dash
-A periodically updatin dashboard to display glucose statistics from nightscout deployment.
+A periodically updating dashboard to display continuous blood glucose statistics from nightscout deployment.
 
-I use this with an old always on tablet on my wall to allow me to very easily see these values exercising.  Nightscout is compatabile with freestyle libre devices with the [Juggluco](https://github.com/j-kaltes/Juggluco) mobile app.
+Nightscout is a tool to collect blood glucose data. Nightscout is compatabile with freestyle libre devices with the [Juggluco](https://github.com/j-kaltes/Juggluco) mobile app.
+
+I use this with an old always on tablet on my wall to allow me to very easily see these values exercising.  
 
 
 ## Installation
