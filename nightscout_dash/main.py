@@ -98,10 +98,15 @@ HTML_TEMPLATE = """
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
         #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; }
+        #day-chart-container { width:90%; max-width:1200px; margin:20px auto 40px; }
+        #day-chart { width:100%; height:150px; border:1px solid #333; }
     </style>
 </head>
 <body>
     <div id="clock"></div>
+    <div id="day-chart-container">
+        <svg id="day-chart" height="150"></svg>
+    </div>
     <div id="glucose-value" class="loading">--</div>
     <div id="units">mg/dL</div>
     <div id="timestamp">Loading...</div>
@@ -128,7 +133,7 @@ HTML_TEMPLATE = """
             <div class="delta-label">1 hour</div>
             <div>
                 <span class="delta-value" id="delta-1hr">--</span>
-                <svg class="sparkline" id="sparkline-1hr" width="30" height="20"></svg>
+                <svg class="sparkline" id="sparkline-1hr" width="60" height="20"></svg>
             </div>
         </div>
         <div class="delta">
@@ -140,6 +145,134 @@ HTML_TEMPLATE = """
 
     <script>
         var REFRESH_INTERVAL = 30000;
+        
+        function drawDayChart(data) {
+            var svg = document.getElementById('day-chart');
+            if (!svg) {
+                console.log('Day chart: SVG element not found');
+                return;
+            }
+            if (!data || data.length === 0) {
+                console.log('Day chart: No data', {dataLength: data ? data.length : 0});
+                return;
+            }
+            
+            console.log('Drawing day chart with', data.length, 'points');
+            
+            // Clear previous content
+            svg.innerHTML = '';
+            
+            var width = svg.clientWidth;
+            if (width === 0) width = 1000;  // Fallback
+            var height = parseInt(svg.getAttribute('height'));
+            var padding = 30;
+            
+            try {
+                // Filter to valid glucose values first
+                var validData = [];
+                for (var i = 0; i < data.length; i++) {
+                    var val = data[i].value;
+                    if (val >= 20 && val <= 500) {
+                        validData.push({
+                            time: data[i].time,
+                            value: val
+                        });
+                    }
+                }
+                
+                if (validData.length === 0) {
+                    console.log('Day chart: No valid data points');
+                    return;
+                }
+                
+                console.log('Day chart: filtered to', validData.length, 'valid points from', data.length, 'total');
+                
+                // Calculate scales from VALID data only
+                var values = validData.map(function(d) { return d.value; });
+                var minVal = Math.min.apply(null, values);
+                var maxVal = Math.max.apply(null, values);
+                var range = maxVal - minVal;
+                if (range === 0) range = 1; // Avoid division by zero
+                
+                console.log('Day chart range:', minVal, '-', maxVal);
+                
+                // X-axis: 0-1440 minutes (24 hours)
+                var xScale = (width - 2 * padding) / 1440;
+                
+                // Build path from VALID data
+                var points = [];
+                for (var i = 0; i < validData.length; i++) {
+                    var x = padding + validData[i].time * xScale;
+                    var normalizedY = (validData[i].value - minVal) / range;
+                    var y = height - padding - normalizedY * (height - 2 * padding);
+                    points.push(x + ',' + y);
+                }
+                
+                console.log('Day chart: rendering', points.length, 'points');
+                
+                // Draw path
+                if (points.length > 0) {
+                    var polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                    polyline.setAttribute('points', points.join(' '));
+                    polyline.setAttribute('fill', 'none');
+                    polyline.setAttribute('stroke', '#66aaff');
+                    polyline.setAttribute('stroke-width', '2');
+                    svg.appendChild(polyline);
+                }
+                
+                // Draw grid
+                var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                g.setAttribute('stroke', '#333');
+                g.setAttribute('stroke-width', '0.5');
+                
+                // Horizontal grid (glucose values)
+                var step = Math.ceil(range / 4);
+                for (var v = Math.ceil(minVal / step) * step; v <= maxVal; v += step) {
+                    var y = height - padding - ((v - minVal) / range) * (height - 2 * padding);
+                    var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', padding);
+                    line.setAttribute('y1', y);
+                    line.setAttribute('x2', width - padding);
+                    line.setAttribute('y2', y);
+                    g.appendChild(line);
+                    
+                    // Label
+                    var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', padding - 5);
+                    text.setAttribute('y', y + 4);
+                    text.setAttribute('text-anchor', 'end');
+                    text.setAttribute('fill', '#666');
+                    text.setAttribute('font-size', '10');
+                    text.textContent = v;
+                    g.appendChild(text);
+                }
+                
+                // Vertical grid (hours)
+                for (var h = 0; h <= 24; h += 3) {
+                    var x = padding + (h * 60) * xScale;
+                    var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', x);
+                    line.setAttribute('y1', padding);
+                    line.setAttribute('x2', x);
+                    line.setAttribute('y2', height - padding);
+                    g.appendChild(line);
+                    
+                    // Label
+                    var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', x);
+                    text.setAttribute('y', height - padding + 15);
+                    text.setAttribute('text-anchor', 'middle');
+                    text.setAttribute('fill', '#666');
+                    text.setAttribute('font-size', '10');
+                    text.textContent = h + ':00';
+                    g.appendChild(text);
+                }
+                
+                svg.appendChild(g);
+            } catch (e) {
+                console.error('Error drawing day chart:', e);
+            }
+        }
         
         function drawSparkline(svgId, dataPoints) {
             var svg = document.getElementById(svgId);
@@ -271,6 +404,11 @@ HTML_TEMPLATE = """
                                 }
                             }
                             
+                            // Draw day chart
+                            if (data.day_chart) {
+                                drawDayChart(data.day_chart);
+                            }
+                            
                             errorElem.style.display = 'none';
                         } catch (e) {
                             errorElem.textContent = 'Error: ' + e.message;
@@ -334,11 +472,12 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
             headers = {"API-SECRET": app.config['USER_TOKEN']}
             
             THREE_HOURS_MS = 3 * 60 * 60 * 1000
+            SIX_HOURS_MS = 6 * 60 * 60 * 1000
             
-            # First load: fetch until we have 3 hours of data
+            # First load: fetch until midnight (00:00 today)
             if not app.config['CACHE_INITIALIZED']:
                 if not production:
-                    print("Initial load: fetching entries going back 3 hours")
+                    print("Initial load: fetching entries back to midnight")
                 
                 all_entries = []
                 batch_size = 100
@@ -353,13 +492,19 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     return jsonify({"error": "No data available"}), 404
                 
                 current_time = latest[0].get('date')
-                three_hours_ago = current_time - THREE_HOURS_MS
+                
+                # Calculate midnight today (00:00 local time)
+                # Note: current_time is in milliseconds since epoch
+                import datetime
+                current_dt = datetime.datetime.fromtimestamp(current_time / 1000)
+                midnight_today = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                midnight_ms = int(midnight_today.timestamp() * 1000)
                 all_entries.extend(latest)
                 
                 oldest_fetched = current_time
                 
-                # Keep fetching until we've gone back 3 hours in time
-                while oldest_fetched > three_hours_ago:
+                # Keep fetching until we've gone back to midnight
+                while oldest_fetched > midnight_ms:
                     params = {
                         "count": batch_size,
                         "find[date][$lt]": oldest_fetched
@@ -373,7 +518,7 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                         # No more data available, but keep trying to go back
                         # Simulate going back in time
                         oldest_fetched = oldest_fetched - (10 * 60 * 1000)  # Jump back 10 minutes
-                        if oldest_fetched < three_hours_ago:
+                        if oldest_fetched < midnight_ms:
                             break
                         continue
                     
@@ -415,11 +560,11 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     if not any(e.get('date') == entry_date for e in cache):
                         cache.insert(0, entry)
                 
-                # Trim cache: keep only last 3.5 hours
+                # Trim cache: keep data since yesterday (to handle midnight rollover)
                 now = data[0].get('date')
-                three_half_hours_ago = now - (3.5 * 60 * 60 * 1000)
+                yesterday_ms = now - (25 * 60 * 60 * 1000)  # 25 hours ago
                 app.config['GLUCOSE_CACHE'] = [
-                    e for e in cache if e.get('date') > three_half_hours_ago
+                    e for e in cache if e.get('date') > yesterday_ms
                 ]
             
             if not production:
@@ -501,9 +646,9 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     sparkline_points.append(None)
             sparklines['10min'] = list(reversed(sparkline_points))
             
-            # 1-hour sparkline: 3 points, last 3 hours (1-hour intervals)
+            # 1-hour sparkline: 6 points, last 6 hours (1-hour intervals)
             sparkline_points = []
-            for i in range(3):
+            for i in range(6):
                 target_time = current_time - (i * 60 * 60 * 1000)  # i hours ago
                 closest = None
                 min_diff = float('inf')
@@ -518,6 +663,23 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     sparkline_points.append(None)
             sparklines['1hr'] = list(reversed(sparkline_points))
             
+            # Full day chart: all data since midnight
+            import datetime
+            current_dt = datetime.datetime.fromtimestamp(current_time / 1000)
+            midnight_today = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            midnight_ms = int(midnight_today.timestamp() * 1000)
+            
+            day_chart_data = []
+            for entry in reversed(cache):  # Oldest to newest
+                entry_time = entry.get('date')
+                if entry_time >= midnight_ms and entry.get('sgv'):
+                    # Calculate minutes since midnight
+                    minutes_since_midnight = (entry_time - midnight_ms) / (60 * 1000)
+                    day_chart_data.append({
+                        'time': minutes_since_midnight,
+                        'value': entry.get('sgv')
+                    })
+            
             if not production:
                 print(f"Cache size: {len(cache)} entries")
             
@@ -527,7 +689,8 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 "units": current_entry.get('units', 'mg/dL'),
                 "direction": current_entry.get('direction', ''),
                 "deltas": deltas,
-                "sparklines": sparklines
+                "sparklines": sparklines,
+                "day_chart": day_chart_data
             })
             
         except requests.RequestException as e:
