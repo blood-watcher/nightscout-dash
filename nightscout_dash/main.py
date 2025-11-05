@@ -95,6 +95,14 @@ HTML_TEMPLATE = """
         #deltas .delta-value.positive { color:#ff6666; }
         #deltas .delta-value.negative { color:#66ff66; }
         .sparkline { display:inline-block; margin-left:10px; vertical-align:middle; }
+        #stats { margin-top:50px; font-size:1.2rem; width:600px; }
+        .stat-row { display:flex; align-items:center; margin-bottom:15px; gap:15px; }
+        .stat-label { width:80px; color:#888; text-align:right; }
+        .progress-bar-container { flex:1; height:25px; background:#222; border-radius:5px; overflow:hidden; position:relative; }
+        .progress-bar-fill { height:100%; transition:width 0.3s ease; }
+        .progress-bar-fill.green { background:#66ff66; }
+        .progress-bar-fill.orange { background:#ff9933; }
+        .progress-bar-text { position:absolute; right:10px; top:50%; transform:translateY(-50%); color:#fff; font-weight:bold; font-size:1rem; }
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
         #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; }
@@ -141,8 +149,23 @@ HTML_TEMPLATE = """
             <div class="delta-value" id="delta-3hr">--</div>
         </div>
     </div>
+    <div id="stats">
+        <div class="stat-row">
+            <div class="stat-label">&lt; 100</div>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill green" id="bar-100" style="width:0%"></div>
+                <div class="progress-bar-text" id="text-100">0%</div>
+            </div>
+        </div>
+        <div class="stat-row">
+            <div class="stat-label">&lt; 180</div>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill orange" id="bar-180" style="width:0%"></div>
+                <div class="progress-bar-text" id="text-180">0%</div>
+            </div>
+        </div>
+    </div>
     <div id="error"></div>
-
     <script>
         var REFRESH_INTERVAL = 30000;
         
@@ -317,6 +340,26 @@ HTML_TEMPLATE = """
             }
         }
         
+        function updateStats(stats) {
+            if (!stats) return;
+            
+            // Update < 100
+            var bar100 = document.getElementById('bar-100');
+            var text100 = document.getElementById('text-100');
+            if (bar100 && text100) {
+                bar100.style.width = stats.percent_below_100 + '%';
+                text100.textContent = stats.percent_below_100 + '%';
+            }
+            
+            // Update < 180
+            var bar180 = document.getElementById('bar-180');
+            var text180 = document.getElementById('text-180');
+            if (bar180 && text180) {
+                bar180.style.width = stats.percent_below_180 + '%';
+                text180.textContent = stats.percent_below_180 + '%';
+            }
+        }
+        
         function formatMinutesAgo(timestamp) {
             var now = new Date();
             var then = new Date(timestamp);
@@ -407,6 +450,11 @@ HTML_TEMPLATE = """
                             // Draw day chart
                             if (data.day_chart) {
                                 drawDayChart(data.day_chart);
+                            }
+                            
+                            // Update stats
+                            if (data.stats) {
+                                updateStats(data.stats);
                             }
                             
                             errorElem.style.display = 'none';
@@ -680,8 +728,23 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                         'value': entry.get('sgv')
                     })
             
+            # Calculate percentages for < 100 and < 180 from midnight
+            entries_since_midnight = [e for e in cache if e.get('date') >= midnight_ms and e.get('sgv')]
+            total_entries = len(entries_since_midnight)
+            
+            if total_entries > 0:
+                below_100_count = sum(1 for e in entries_since_midnight if e.get('sgv') < 100)
+                below_180_count = sum(1 for e in entries_since_midnight if e.get('sgv') < 180)
+                
+                percent_below_100 = round((below_100_count / total_entries) * 100)
+                percent_below_180 = round((below_180_count / total_entries) * 100)
+            else:
+                percent_below_100 = 0
+                percent_below_180 = 0
+            
             if not production:
                 print(f"Cache size: {len(cache)} entries")
+                print(f"< 100: {percent_below_100}%, < 180: {percent_below_180}%")
             
             return jsonify({
                 "value": current_value or '--',
@@ -690,7 +753,11 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 "direction": current_entry.get('direction', ''),
                 "deltas": deltas,
                 "sparklines": sparklines,
-                "day_chart": day_chart_data
+                "day_chart": day_chart_data,
+                "stats": {
+                    "percent_below_100": percent_below_100,
+                    "percent_below_180": percent_below_180
+                }
             })
             
         except requests.RequestException as e:
