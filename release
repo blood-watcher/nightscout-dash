@@ -2,7 +2,7 @@
 set -o errexit
 set -o nounset
 set -o pipefail
-git push origin HEAD:main
+git push origin HEAD:master
 # Extract version from pyproject.toml if it exists, otherwise fall back to setup.py
 if [ -f pyproject.toml ]; then
     VERSION=$(cat pyproject.toml | toml2json | jq -rc '.project.version')
