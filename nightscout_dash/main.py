@@ -94,6 +94,7 @@ HTML_TEMPLATE = """
         #deltas .delta-value { font-weight:bold; }
         #deltas .delta-value.positive { color:#ff6666; }
         #deltas .delta-value.negative { color:#66ff66; }
+        .sparkline { display:inline-block; margin-left:10px; vertical-align:middle; }
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
         #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; }
@@ -107,11 +108,17 @@ HTML_TEMPLATE = """
     <div id="deltas">
         <div class="delta">
             <div class="delta-label">1 min</div>
-            <div class="delta-value" id="delta-1min">--</div>
+            <div>
+                <span class="delta-value" id="delta-1min">--</span>
+                <svg class="sparkline" id="sparkline-1min" width="60" height="20"></svg>
+            </div>
         </div>
         <div class="delta">
             <div class="delta-label">10 min</div>
-            <div class="delta-value" id="delta-10min">--</div>
+            <div>
+                <span class="delta-value" id="delta-10min">--</span>
+                <svg class="sparkline" id="sparkline-10min" width="40" height="20"></svg>
+            </div>
         </div>
         <div class="delta">
             <div class="delta-label">30 min</div>
@@ -119,7 +126,10 @@ HTML_TEMPLATE = """
         </div>
         <div class="delta">
             <div class="delta-label">1 hour</div>
-            <div class="delta-value" id="delta-1hr">--</div>
+            <div>
+                <span class="delta-value" id="delta-1hr">--</span>
+                <svg class="sparkline" id="sparkline-1hr" width="30" height="20"></svg>
+            </div>
         </div>
         <div class="delta">
             <div class="delta-label">3 hours</div>
@@ -130,6 +140,49 @@ HTML_TEMPLATE = """
 
     <script>
         var REFRESH_INTERVAL = 30000;
+        
+        function drawSparkline(svgId, dataPoints) {
+            var svg = document.getElementById(svgId);
+            if (!svg) return;
+            
+            // Clear previous content
+            svg.innerHTML = '';
+            
+            // Filter out null values
+            var validPoints = dataPoints.filter(function(p) { return p !== null; });
+            if (validPoints.length === 0) return;
+            
+            var width = parseInt(svg.getAttribute('width'));
+            var height = parseInt(svg.getAttribute('height'));
+            var padding = 2;
+            
+            // Calculate scales
+            var minVal = Math.min.apply(null, validPoints);
+            var maxVal = Math.max.apply(null, validPoints);
+            var range = maxVal - minVal || 1; // Avoid division by zero
+            
+            // Build path
+            var points = [];
+            var xStep = (width - 2 * padding) / (dataPoints.length - 1 || 1);
+            
+            for (var i = 0; i < dataPoints.length; i++) {
+                if (dataPoints[i] !== null) {
+                    var x = padding + i * xStep;
+                    var normalizedY = (dataPoints[i] - minVal) / range;
+                    var y = height - padding - normalizedY * (height - 2 * padding);
+                    points.push(x + ',' + y);
+                }
+            }
+            
+            if (points.length > 0) {
+                var polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                polyline.setAttribute('points', points.join(' '));
+                polyline.setAttribute('fill', 'none');
+                polyline.setAttribute('stroke', '#888');
+                polyline.setAttribute('stroke-width', '1.5');
+                svg.appendChild(polyline);
+            }
+        }
         
         function formatMinutesAgo(timestamp) {
             var now = new Date();
@@ -202,6 +255,19 @@ HTML_TEMPLATE = """
                                 } else {
                                     elem.textContent = '--';
                                     elem.classList.remove('positive', 'negative');
+                                }
+                            }
+                            
+                            // Draw sparklines
+                            if (data.sparklines) {
+                                if (data.sparklines['1min']) {
+                                    drawSparkline('sparkline-1min', data.sparklines['1min']);
+                                }
+                                if (data.sparklines['10min']) {
+                                    drawSparkline('sparkline-10min', data.sparklines['10min']);
+                                }
+                                if (data.sparklines['1hr']) {
+                                    drawSparkline('sparkline-1hr', data.sparklines['1hr']);
                                 }
                             }
                             
@@ -398,6 +464,60 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 else:
                     deltas[period_name] = None
             
+            # Generate sparkline data
+            sparklines = {}
+            
+            # 1-min sparkline: 10 points, last 10 minutes
+            sparkline_points = []
+            for i in range(10):
+                target_time = current_time - (i * 60 * 1000)  # i minutes ago
+                closest = None
+                min_diff = float('inf')
+                for entry in cache:
+                    diff = abs(entry.get('date') - target_time)
+                    if diff < min_diff:
+                        min_diff = diff
+                        closest = entry
+                if closest and closest.get('sgv'):
+                    sparkline_points.append(closest.get('sgv'))
+                else:
+                    sparkline_points.append(None)
+            sparklines['1min'] = list(reversed(sparkline_points))  # Oldest to newest
+            
+            # 10-min sparkline: 6 points, last hour (10-min intervals)
+            sparkline_points = []
+            for i in range(6):
+                target_time = current_time - (i * 10 * 60 * 1000)  # i*10 minutes ago
+                closest = None
+                min_diff = float('inf')
+                for entry in cache:
+                    diff = abs(entry.get('date') - target_time)
+                    if diff < min_diff:
+                        min_diff = diff
+                        closest = entry
+                if closest and closest.get('sgv'):
+                    sparkline_points.append(closest.get('sgv'))
+                else:
+                    sparkline_points.append(None)
+            sparklines['10min'] = list(reversed(sparkline_points))
+            
+            # 1-hour sparkline: 3 points, last 3 hours (1-hour intervals)
+            sparkline_points = []
+            for i in range(3):
+                target_time = current_time - (i * 60 * 60 * 1000)  # i hours ago
+                closest = None
+                min_diff = float('inf')
+                for entry in cache:
+                    diff = abs(entry.get('date') - target_time)
+                    if diff < min_diff:
+                        min_diff = diff
+                        closest = entry
+                if closest and closest.get('sgv'):
+                    sparkline_points.append(closest.get('sgv'))
+                else:
+                    sparkline_points.append(None)
+            sparklines['1hr'] = list(reversed(sparkline_points))
+            
             if not production:
                 print(f"Cache size: {len(cache)} entries")
             
@@ -406,7 +526,8 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 "timestamp": current_entry.get('dateString'),
                 "units": current_entry.get('units', 'mg/dL'),
                 "direction": current_entry.get('direction', ''),
-                "deltas": deltas
+                "deltas": deltas,
+                "sparklines": sparklines
             })
             
         except requests.RequestException as e:
