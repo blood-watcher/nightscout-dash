@@ -88,6 +88,12 @@ HTML_TEMPLATE = """
         #units { font-size:3rem; color:#888; margin-bottom:40px; }
         #timestamp { font-size:2rem; color:#666; }
         #timestamp.stale { color:#ff4444; }
+        #deltas { font-size:1.5rem; color:#888; margin-top:30px; display:flex; gap:30px; justify-content:center; }
+        #deltas .delta { display:flex; flex-direction:column; align-items:center; }
+        #deltas .delta-label { font-size:1rem; color:#666; margin-bottom:5px; }
+        #deltas .delta-value { font-weight:bold; }
+        #deltas .delta-value.positive { color:#ff6666; }
+        #deltas .delta-value.negative { color:#66ff66; }
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
         #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; }
@@ -98,6 +104,28 @@ HTML_TEMPLATE = """
     <div id="glucose-value" class="loading">--</div>
     <div id="units">mg/dL</div>
     <div id="timestamp">Loading...</div>
+    <div id="deltas">
+        <div class="delta">
+            <div class="delta-label">1 min</div>
+            <div class="delta-value" id="delta-1min">--</div>
+        </div>
+        <div class="delta">
+            <div class="delta-label">10 min</div>
+            <div class="delta-value" id="delta-10min">--</div>
+        </div>
+        <div class="delta">
+            <div class="delta-label">30 min</div>
+            <div class="delta-value" id="delta-30min">--</div>
+        </div>
+        <div class="delta">
+            <div class="delta-label">1 hour</div>
+            <div class="delta-value" id="delta-1hr">--</div>
+        </div>
+        <div class="delta">
+            <div class="delta-label">3 hours</div>
+            <div class="delta-value" id="delta-3hr">--</div>
+        </div>
+    </div>
     <div id="error"></div>
 
     <script>
@@ -145,6 +173,38 @@ HTML_TEMPLATE = """
                             glucoseElem.textContent = data.value;
                             glucoseElem.classList.remove('loading');
                             timestampElem.textContent = formatMinutesAgo(data.timestamp);
+                            
+                            // Update deltas
+                            var deltaMapping = {
+                                '1min': 'delta-1min',
+                                '10min': 'delta-10min',
+                                '30min': 'delta-30min',
+                                '1hr': 'delta-1hr',
+                                '3hr': 'delta-3hr'
+                            };
+                            
+                            for (var key in deltaMapping) {
+                                var elemId = deltaMapping[key];
+                                var elem = document.getElementById(elemId);
+                                var deltaValue = data.deltas[key];
+                                
+                                if (deltaValue !== null && deltaValue !== undefined) {
+                                    var sign = deltaValue > 0 ? '+' : '';
+                                    elem.textContent = sign + deltaValue;
+                                    
+                                    // Color code: red for increase, green for decrease
+                                    elem.classList.remove('positive', 'negative');
+                                    if (deltaValue > 0) {
+                                        elem.classList.add('positive');
+                                    } else if (deltaValue < 0) {
+                                        elem.classList.add('negative');
+                                    }
+                                } else {
+                                    elem.textContent = '--';
+                                    elem.classList.remove('positive', 'negative');
+                                }
+                            }
+                            
                             errorElem.style.display = 'none';
                         } catch (e) {
                             errorElem.textContent = 'Error: ' + e.message;
@@ -189,6 +249,10 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
     app.config['USER_TOKEN'] = user_token
     app.config['PRODUCTION'] = production
     
+    # Cache for glucose entries (stored as list sorted by timestamp descending)
+    app.config['GLUCOSE_CACHE'] = []
+    app.config['CACHE_INITIALIZED'] = False
+    
     @app.route('/')
     def index():
         return render_template_string(HTML_TEMPLATE)
@@ -202,31 +266,147 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 app.config['NIGHTSCOUT_PORT']
             )
             headers = {"API-SECRET": app.config['USER_TOKEN']}
-            params = {"count": 1}
             
-            if not production:
-                print("Fetching from:", url)
-                print("Using user token:", app.config['USER_TOKEN'][:10] + "..." if app.config['USER_TOKEN'] else "No user token set!")
+            THREE_HOURS_MS = 3 * 60 * 60 * 1000
             
-            response = requests.get(url, headers=headers, params=params, timeout=10)
+            # First load: fetch until we have 3 hours of data
+            if not app.config['CACHE_INITIALIZED']:
+                if not production:
+                    print("Initial load: fetching entries going back 3 hours")
+                
+                all_entries = []
+                batch_size = 100
+                
+                # Get the current time first
+                params = {"count": 1}
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                latest = response.json()
+                
+                if not latest:
+                    return jsonify({"error": "No data available"}), 404
+                
+                current_time = latest[0].get('date')
+                three_hours_ago = current_time - THREE_HOURS_MS
+                all_entries.extend(latest)
+                
+                oldest_fetched = current_time
+                
+                # Keep fetching until we've gone back 3 hours in time
+                while oldest_fetched > three_hours_ago:
+                    params = {
+                        "count": batch_size,
+                        "find[date][$lt]": oldest_fetched
+                    }
+                    
+                    response = requests.get(url, headers=headers, params=params, timeout=10)
+                    response.raise_for_status()
+                    batch = response.json()
+                    
+                    if not batch:
+                        # No more data available, but keep trying to go back
+                        # Simulate going back in time
+                        oldest_fetched = oldest_fetched - (10 * 60 * 1000)  # Jump back 10 minutes
+                        if oldest_fetched < three_hours_ago:
+                            break
+                        continue
+                    
+                    all_entries.extend(batch)
+                    oldest_fetched = batch[-1].get('date')
+                    
+                    if not production:
+                        print(f"Fetched {len(all_entries)} entries so far, oldest: {oldest_fetched}")
+                    
+                    # Safety: don't fetch more than 500 entries total
+                    if len(all_entries) >= 500:
+                        if not production:
+                            print(f"Reached 500 entry safety limit")
+                        break
+                
+                if not production:
+                    print(f"Initial fetch complete: {len(all_entries)} entries")
+                
+                app.config['GLUCOSE_CACHE'] = all_entries
+                app.config['CACHE_INITIALIZED'] = True
+                
+            else:
+                # Subsequent loads: fetch only 1 entry
+                if not production:
+                    print("Incremental update: fetching 1 entry")
+                params = {"count": 1}
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    return jsonify({"error": "No data available"}), 404
+                
+                # Merge new data into cache
+                cache = app.config['GLUCOSE_CACHE']
+                for entry in data:
+                    entry_date = entry.get('date')
+                    # Only add if not already in cache
+                    if not any(e.get('date') == entry_date for e in cache):
+                        cache.insert(0, entry)
+                
+                # Trim cache: keep only last 3.5 hours
+                now = data[0].get('date')
+                three_half_hours_ago = now - (3.5 * 60 * 60 * 1000)
+                app.config['GLUCOSE_CACHE'] = [
+                    e for e in cache if e.get('date') > three_half_hours_ago
+                ]
             
             if not production:
                 print("Response status:", response.status_code)
-                print("Response headers:", response.headers)
-                print("Response text:", response.text[:200])
             
-            response.raise_for_status()
-            data = response.json()
+            # Use cache for calculations
+            cache = app.config['GLUCOSE_CACHE']
             
-            if not data:
+            if not cache:
                 return jsonify({"error": "No data available"}), 404
             
-            entry = data[0]
+            current_entry = cache[0]
+            current_value = current_entry.get('sgv')
+            current_time = current_entry.get('date')
+            
+            # Calculate deltas for different time periods (in milliseconds)
+            time_periods = {
+                '1min': 1 * 60 * 1000,
+                '10min': 10 * 60 * 1000,
+                '30min': 30 * 60 * 1000,
+                '1hr': 60 * 60 * 1000,
+                '3hr': 3 * 60 * 60 * 1000
+            }
+            
+            deltas = {}
+            for period_name, period_ms in time_periods.items():
+                target_time = current_time - period_ms
+                # Find the closest entry to the target time
+                closest_entry = None
+                min_diff = float('inf')
+                
+                for entry in cache:
+                    entry_time = entry.get('date')
+                    time_diff = abs(entry_time - target_time)
+                    if time_diff < min_diff:
+                        min_diff = time_diff
+                        closest_entry = entry
+                
+                if closest_entry and closest_entry.get('sgv'):
+                    delta = current_value - closest_entry.get('sgv')
+                    deltas[period_name] = delta
+                else:
+                    deltas[period_name] = None
+            
+            if not production:
+                print(f"Cache size: {len(cache)} entries")
+            
             return jsonify({
-                "value": entry.get('sgv', '--'),
-                "timestamp": entry.get('dateString'),
-                "units": entry.get('units', 'mg/dL'),
-                "direction": entry.get('direction', '')
+                "value": current_value or '--',
+                "timestamp": current_entry.get('dateString'),
+                "units": current_entry.get('units', 'mg/dL'),
+                "direction": current_entry.get('direction', ''),
+                "deltas": deltas
             })
             
         except requests.RequestException as e:
