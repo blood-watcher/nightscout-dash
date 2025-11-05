@@ -85,7 +85,6 @@ HTML_TEMPLATE = """
             height:100vh; overflow:hidden;
         }
         #glucose-value { font-size:15rem; font-weight:bold; line-height:1; margin-bottom:20px; }
-        #units { font-size:3rem; color:#888; margin-bottom:40px; }
         #timestamp { font-size:2rem; color:#666; }
         #timestamp.stale { color:#ff4444; }
         #deltas { font-size:1.5rem; color:#888; margin-top:30px; display:flex; gap:30px; justify-content:center; }
@@ -105,19 +104,20 @@ HTML_TEMPLATE = """
         .progress-bar-text { position:absolute; right:10px; top:50%; transform:translateY(-50%); color:#fff; font-weight:bold; font-size:1rem; }
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
-        #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; }
+        #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; display:flex; gap:20px; align-items:center; }
         #day-chart-container { width:90%; max-width:1200px; margin:20px auto 40px; }
         #day-chart { width:100%; height:150px; border:1px solid #333; }
     </style>
 </head>
 <body>
-    <div id="clock"></div>
+    <div id="clock">
+        <span id="clock-time"></span>
+        <span id="timestamp">Loading...</span>
+    </div>
     <div id="day-chart-container">
         <svg id="day-chart" height="150"></svg>
     </div>
     <div id="glucose-value" class="loading">--</div>
-    <div id="units">mg/dL</div>
-    <div id="timestamp">Loading...</div>
     <div id="deltas">
         <div class="delta">
             <div class="delta-label">1 min</div>
@@ -481,7 +481,7 @@ HTML_TEMPLATE = """
             var now = new Date();
             var hours = now.getHours().toString().padStart(2, '0');
             var minutes = now.getMinutes().toString().padStart(2, '0');
-            document.getElementById('clock').textContent = hours + ':' + minutes;
+            document.getElementById('clock-time').textContent = hours + ':' + minutes;
         }
         updateClock();
         setInterval(updateClock, 30000);
