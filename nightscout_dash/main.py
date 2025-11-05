@@ -2,7 +2,6 @@
 """
 Flask app for Nightscout Dashboard
 """
-
 from flask import Flask, jsonify, render_template_string
 import requests
 import os
@@ -51,6 +50,7 @@ def parse_nightscout_url(url_or_host):
         host = url_or_host
         scheme = 'http'
         port = 80
+    
     return scheme, host, port
 
 def load_credentials(credential_file):
@@ -87,6 +87,7 @@ HTML_TEMPLATE = """
         #glucose-value { font-size:15rem; font-weight:bold; line-height:1; margin-bottom:20px; }
         #units { font-size:3rem; color:#888; margin-bottom:40px; }
         #timestamp { font-size:2rem; color:#666; }
+        #timestamp.stale { color:#ff4444; }
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
     </style>
@@ -96,15 +97,24 @@ HTML_TEMPLATE = """
     <div id="units">mg/dL</div>
     <div id="timestamp">Loading...</div>
     <div id="error"></div>
+
     <script>
         var REFRESH_INTERVAL = 30000;
-
+        
         function formatMinutesAgo(timestamp) {
             var now = new Date();
             var then = new Date(timestamp);
             var diffMs = now - then;
             var diffMins = Math.floor(diffMs / 60000);
-
+            
+            // Update timestamp element with stale class if >5 minutes
+            var timestampElem = document.getElementById('timestamp');
+            if (diffMins > 5) {
+                timestampElem.classList.add('stale');
+            } else {
+                timestampElem.classList.remove('stale');
+            }
+            
             if (diffMins === 0) return 'just now';
             else if (diffMins === 1) return '1 minute ago';
             else if (diffMins < 60) return diffMins + ' minutes ago';
@@ -115,7 +125,7 @@ HTML_TEMPLATE = """
                 else return mins === 0 ? hours + ' hours ago' : hours + ' hours ' + mins + ' minutes ago';
             }
         }
-
+        
         function fetchGlucose() {
             var xhr = new XMLHttpRequest();
             xhr.open('GET', '/api/glucose', true);
@@ -124,12 +134,12 @@ HTML_TEMPLATE = """
                     var errorElem = document.getElementById('error');
                     var glucoseElem = document.getElementById('glucose-value');
                     var timestampElem = document.getElementById('timestamp');
-
+                    
                     if (xhr.status === 200) {
                         try {
                             var data = JSON.parse(xhr.responseText);
                             if (data.error) throw new Error(data.error);
-
+                            
                             glucoseElem.textContent = data.value;
                             glucoseElem.classList.remove('loading');
                             timestampElem.textContent = formatMinutesAgo(data.timestamp);
@@ -148,7 +158,7 @@ HTML_TEMPLATE = """
             };
             xhr.send();
         }
-
+        
         fetchGlucose();
         setInterval(fetchGlucose, REFRESH_INTERVAL);
     </script>
@@ -159,18 +169,18 @@ HTML_TEMPLATE = """
 def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, production=False):
     """Create and configure the Flask app"""
     app = Flask(__name__)
-
+    
     # Store config in app
     app.config['NIGHTSCOUT_SCHEME'] = nightscout_scheme
     app.config['NIGHTSCOUT_HOST'] = nightscout_host
     app.config['NIGHTSCOUT_PORT'] = nightscout_port
     app.config['USER_TOKEN'] = user_token
     app.config['PRODUCTION'] = production
-
+    
     @app.route('/')
     def index():
         return render_template_string(HTML_TEMPLATE)
-
+    
     @app.route('/api/glucose')
     def get_glucose():
         try:
@@ -181,23 +191,24 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
             )
             headers = {"API-SECRET": app.config['USER_TOKEN']}
             params = {"count": 1}
-
+            
             if not production:
                 print("Fetching from:", url)
                 print("Using user token:", app.config['USER_TOKEN'][:10] + "..." if app.config['USER_TOKEN'] else "No user token set!")
-
+            
             response = requests.get(url, headers=headers, params=params, timeout=10)
-
+            
             if not production:
                 print("Response status:", response.status_code)
                 print("Response headers:", response.headers)
                 print("Response text:", response.text[:200])
-
+            
             response.raise_for_status()
             data = response.json()
+            
             if not data:
                 return jsonify({"error": "No data available"}), 404
-
+            
             entry = data[0]
             return jsonify({
                 "value": entry.get('sgv', '--'),
@@ -205,7 +216,7 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 "units": entry.get('units', 'mg/dL'),
                 "direction": entry.get('direction', '')
             })
-
+            
         except requests.RequestException as e:
             print("Request error:", e)
             return jsonify({"error": str(e)}), 500
@@ -214,24 +225,23 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
             import traceback
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
-
+    
     return app
 
 def main():
     parser = argparse.ArgumentParser(
         description="Nightscout Dashboard - Web display for Nightscout glucose data"
     )
-
     parser.add_argument('bind_address', help='Bind address (e.g., 0.0.0.0 or 0.0.0.0:8080)')
     parser.add_argument('nightscout_server', help='Nightscout server (e.g., http://host:port/, host:port, or host)')
     parser.add_argument('--credential-file', type=str, help='Path to JSON file containing user_token')
     parser.add_argument('--production', action='store_true', help='Run with production WSGI server (waitress)')
-
+    
     args = parser.parse_args()
-
+    
     bind_host, bind_port = parse_bind_address(args.bind_address)
     scheme, nightscout_host, nightscout_port = parse_nightscout_url(args.nightscout_server)
-
+    
     if args.credential_file:
         try:
             creds = load_credentials(args.credential_file)
@@ -242,12 +252,12 @@ def main():
             parser.error(str(e))
     else:
         user_token = DEFAULT_USER_TOKEN
-
+    
     app = create_app(scheme, nightscout_host, nightscout_port, user_token, production=args.production)
-
+    
     print("Starting Nightscout Dashboard on http://{}:{}".format(bind_host, bind_port))
     print("Connecting to Nightscout at {}://{}:{}".format(scheme, nightscout_host, nightscout_port))
-
+    
     if args.production:
         try:
             from waitress import serve
