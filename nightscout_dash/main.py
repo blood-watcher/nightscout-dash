@@ -90,9 +90,11 @@ HTML_TEMPLATE = """
         #timestamp.stale { color:#ff4444; }
         #error { font-size:2rem; color:#ff4444; text-align:center; padding:20px; display:none; }
         .loading { font-size:3rem; color:#666; }
+        #clock { position:absolute; top:20px; left:20px; font-size:2rem; color:#666; }
     </style>
 </head>
 <body>
+    <div id="clock"></div>
     <div id="glucose-value" class="loading">--</div>
     <div id="units">mg/dL</div>
     <div id="timestamp">Loading...</div>
@@ -161,6 +163,16 @@ HTML_TEMPLATE = """
         
         fetchGlucose();
         setInterval(fetchGlucose, REFRESH_INTERVAL);
+        
+        // Update clock every 30 seconds
+        function updateClock() {
+            var now = new Date();
+            var hours = now.getHours().toString().padStart(2, '0');
+            var minutes = now.getMinutes().toString().padStart(2, '0');
+            document.getElementById('clock').textContent = hours + ':' + minutes;
+        }
+        updateClock();
+        setInterval(updateClock, 30000);
     </script>
 </body>
 </html>
