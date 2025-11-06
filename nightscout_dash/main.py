@@ -394,6 +394,12 @@ HTML_TEMPLATE = """
         function formatMinutesAgo(timestamp) {
             var now = new Date();
             var then = new Date(timestamp);
+            
+            // Fallback if date parsing failed
+            if (isNaN(then.getTime())) {
+                return 'recently';
+            }
+            
             var diffMs = now - then;
             var diffMins = Math.floor(diffMs / 60000);
             
@@ -512,10 +518,14 @@ HTML_TEMPLATE = """
         setInterval(fetchGlucose, REFRESH_INTERVAL);
         
         // Update clock every 30 seconds
+        function pad(num) {
+            return num < 10 ? '0' + num : num;
+        }
+        
         function updateClock() {
             var now = new Date();
-            var hours = now.getHours().toString().padStart(2, '0');
-            var minutes = now.getMinutes().toString().padStart(2, '0');
+            var hours = pad(now.getHours());
+            var minutes = pad(now.getMinutes());
             document.getElementById('clock-time').textContent = hours + ':' + minutes;
         }
         updateClock();
