@@ -168,6 +168,11 @@ HTML_TEMPLATE = """
     <div id="clock">
         <span id="clock-time"></span>
         <span id="timestamp">Loading...</span>
+        <span style="margin-left:40px;">
+            <span style="color:#66ff66;">Min: <span id="min-glucose">--</span></span>
+            <span style="margin:0 15px;">•</span>
+            <span style="color:#ff6666;">Max: <span id="max-glucose">--</span></span>
+        </span>
     </div>
     <div id="day-chart-container">
         <svg id="day-chart" height="150"></svg>
@@ -369,6 +374,20 @@ HTML_TEMPLATE = """
             if (bar180 && text180) {
                 bar180.style.width = stats.percent_below_180 + '%';
                 text180.textContent = stats.percent_below_180 + '%';
+            }
+            
+            // Update min/max
+            var minElem = document.getElementById('min-glucose');
+            var maxElem = document.getElementById('max-glucose');
+            if (minElem && stats.min_glucose !== null && stats.min_glucose !== undefined) {
+                minElem.textContent = stats.min_glucose;
+            } else if (minElem) {
+                minElem.textContent = '--';
+            }
+            if (maxElem && stats.max_glucose !== null && stats.max_glucose !== undefined) {
+                maxElem.textContent = stats.max_glucose;
+            } else if (maxElem) {
+                maxElem.textContent = '--';
             }
         }
         
@@ -761,9 +780,16 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 
                 percent_below_100 = round((below_100_count / total_entries) * 100)
                 percent_below_180 = round((below_180_count / total_entries) * 100)
+                
+                # Calculate min and max for today
+                glucose_values = [e.get('sgv') for e in entries_since_midnight]
+                min_glucose = min(glucose_values)
+                max_glucose = max(glucose_values)
             else:
                 percent_below_100 = 0
                 percent_below_180 = 0
+                min_glucose = None
+                max_glucose = None
             
             if not production:
                 print(f"Cache size: {len(cache)} entries")
@@ -779,7 +805,9 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 "day_chart": day_chart_data,
                 "stats": {
                     "percent_below_100": percent_below_100,
-                    "percent_below_180": percent_below_180
+                    "percent_below_180": percent_below_180,
+                    "min_glucose": min_glucose,
+                    "max_glucose": max_glucose
                 }
             })
             
