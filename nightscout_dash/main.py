@@ -9,6 +9,9 @@ import argparse
 import json
 from pathlib import Path
 from urllib.parse import urlparse
+from PIL import Image, ImageDraw
+import io
+import base64
 
 # Configuration defaults
 DEFAULT_NIGHTSCOUT_PORT = "80"
@@ -69,6 +72,58 @@ def load_credentials(credential_file):
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in credential file: {e}")
 
+def generate_sparkline_png(data_points, width, height):
+    """Generate a sparkline as a PNG image and return as base64 string
+    
+    Args:
+        data_points: List of numeric values (or None for missing data)
+        width: Image width in pixels
+        height: Image height in pixels
+    
+    Returns:
+        Base64-encoded PNG image string
+    """
+    # Filter out null values
+    valid_points = [p for p in data_points if p is not None]
+    
+    if not valid_points:
+        # Return empty/transparent image
+        img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode('utf-8')
+    
+    # Create image with transparent background
+    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # Calculate scales
+    padding = 2
+    min_val = min(valid_points)
+    max_val = max(valid_points)
+    value_range = max_val - min_val if max_val != min_val else 1
+    
+    # Calculate x step based on total data points (including nulls)
+    x_step = (width - 2 * padding) / (len(data_points) - 1) if len(data_points) > 1 else 0
+    
+    # Build points for drawing
+    points = []
+    for i, value in enumerate(data_points):
+        if value is not None:
+            x = padding + i * x_step
+            normalized_y = (value - min_val) / value_range
+            y = height - padding - normalized_y * (height - 2 * padding)
+            points.append((x, y))
+    
+    # Draw line
+    if len(points) > 1:
+        draw.line(points, fill=(136, 136, 136, 255), width=2)
+    
+    # Convert to base64
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -123,14 +178,14 @@ HTML_TEMPLATE = """
             <div class="delta-label">1 min</div>
             <div>
                 <span class="delta-value" id="delta-1min">--</span>
-                <svg class="sparkline" id="sparkline-1min" width="60" height="20"></svg>
+                <img class="sparkline" id="sparkline-1min" width="60" height="20" alt="">
             </div>
         </div>
         <div class="delta">
             <div class="delta-label">10 min</div>
             <div>
                 <span class="delta-value" id="delta-10min">--</span>
-                <svg class="sparkline" id="sparkline-10min" width="40" height="20"></svg>
+                <img class="sparkline" id="sparkline-10min" width="40" height="20" alt="">
             </div>
         </div>
         <div class="delta">
@@ -141,7 +196,7 @@ HTML_TEMPLATE = """
             <div class="delta-label">1 hour</div>
             <div>
                 <span class="delta-value" id="delta-1hr">--</span>
-                <svg class="sparkline" id="sparkline-1hr" width="60" height="20"></svg>
+                <img class="sparkline" id="sparkline-1hr" width="60" height="20" alt="">
             </div>
         </div>
         <div class="delta">
@@ -297,49 +352,6 @@ HTML_TEMPLATE = """
             }
         }
         
-        function drawSparkline(svgId, dataPoints) {
-            var svg = document.getElementById(svgId);
-            if (!svg) return;
-            
-            // Clear previous content
-            svg.innerHTML = '';
-            
-            // Filter out null values
-            var validPoints = dataPoints.filter(function(p) { return p !== null; });
-            if (validPoints.length === 0) return;
-            
-            var width = parseInt(svg.getAttribute('width'));
-            var height = parseInt(svg.getAttribute('height'));
-            var padding = 2;
-            
-            // Calculate scales
-            var minVal = Math.min.apply(null, validPoints);
-            var maxVal = Math.max.apply(null, validPoints);
-            var range = maxVal - minVal || 1; // Avoid division by zero
-            
-            // Build path
-            var points = [];
-            var xStep = (width - 2 * padding) / (dataPoints.length - 1 || 1);
-            
-            for (var i = 0; i < dataPoints.length; i++) {
-                if (dataPoints[i] !== null) {
-                    var x = padding + i * xStep;
-                    var normalizedY = (dataPoints[i] - minVal) / range;
-                    var y = height - padding - normalizedY * (height - 2 * padding);
-                    points.push(x + ',' + y);
-                }
-            }
-            
-            if (points.length > 0) {
-                var polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-                polyline.setAttribute('points', points.join(' '));
-                polyline.setAttribute('fill', 'none');
-                polyline.setAttribute('stroke', '#888');
-                polyline.setAttribute('stroke-width', '1.5');
-                svg.appendChild(polyline);
-            }
-        }
-        
         function updateStats(stats) {
             if (!stats) return;
             
@@ -434,16 +446,20 @@ HTML_TEMPLATE = """
                                 }
                             }
                             
-                            // Draw sparklines
-                            if (data.sparklines) {
-                                if (data.sparklines['1min']) {
-                                    drawSparkline('sparkline-1min', data.sparklines['1min']);
+                            // Update sparkline images
+                            if (data.sparkline_images) {
+                                var sparkline1min = document.getElementById('sparkline-1min');
+                                var sparkline10min = document.getElementById('sparkline-10min');
+                                var sparkline1hr = document.getElementById('sparkline-1hr');
+                                
+                                if (sparkline1min && data.sparkline_images['1min']) {
+                                    sparkline1min.src = 'data:image/png;base64,' + data.sparkline_images['1min'];
                                 }
-                                if (data.sparklines['10min']) {
-                                    drawSparkline('sparkline-10min', data.sparklines['10min']);
+                                if (sparkline10min && data.sparkline_images['10min']) {
+                                    sparkline10min.src = 'data:image/png;base64,' + data.sparkline_images['10min'];
                                 }
-                                if (data.sparklines['1hr']) {
-                                    drawSparkline('sparkline-1hr', data.sparklines['1hr']);
+                                if (sparkline1hr && data.sparkline_images['1hr']) {
+                                    sparkline1hr.src = 'data:image/png;base64,' + data.sparkline_images['1hr'];
                                 }
                             }
                             
@@ -711,6 +727,13 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     sparkline_points.append(None)
             sparklines['1hr'] = list(reversed(sparkline_points))
             
+            # Generate PNG sparkline images
+            sparkline_images = {
+                '1min': generate_sparkline_png(sparklines['1min'], 60, 20),
+                '10min': generate_sparkline_png(sparklines['10min'], 40, 20),
+                '1hr': generate_sparkline_png(sparklines['1hr'], 60, 20)
+            }
+            
             # Full day chart: all data since midnight
             import datetime
             current_dt = datetime.datetime.fromtimestamp(current_time / 1000)
@@ -752,7 +775,7 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 "units": current_entry.get('units', 'mg/dL'),
                 "direction": current_entry.get('direction', ''),
                 "deltas": deltas,
-                "sparklines": sparklines,
+                "sparkline_images": sparkline_images,
                 "day_chart": day_chart_data,
                 "stats": {
                     "percent_below_100": percent_below_100,
