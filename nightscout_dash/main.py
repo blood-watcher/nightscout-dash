@@ -246,6 +246,8 @@ HTML_TEMPLATE = """
             <span style="color:#66ff66;">Min: <span id="min-glucose">--</span></span>
             <span style="margin:0 15px;">•</span>
             <span style="color:#ff6666;">Max: <span id="max-glucose">--</span></span>
+            <span style="margin:0 15px;">•</span>
+            <span style="color:#ffa066;">Rank: <span id="quantile-rank">--</span></span>
         </span>
     </div>
     <div id="day-chart-container">
@@ -462,6 +464,15 @@ HTML_TEMPLATE = """
                 maxElem.textContent = stats.max_glucose;
             } else if (maxElem) {
                 maxElem.textContent = '--';
+            }
+
+            // ADDED: Update Quantile Rank
+            var rankElem = document.getElementById('quantile-rank');
+            if (rankElem && stats.current_quantile_rank !== null && stats.current_quantile_rank !== undefined) {
+                // Display the rank and the status message (e.g., "10% (Excellent)")
+                rankElem.textContent = stats.current_quantile_rank + '% (' + stats.tod_status_message + ')';
+            } else if (rankElem) {
+                rankElem.textContent = '--';
             }
         }
         
