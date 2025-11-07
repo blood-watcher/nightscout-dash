@@ -16,7 +16,11 @@ dependencies = [
 ]
 
 [project.scripts]
+# Existing script for the main dashboard
 nightscout-dash = "nightscout_dash.main:main"
+
+# NEW: Script for chronic history update
+nightscout-dash-update-history = "nightscout_dash.update_history:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
