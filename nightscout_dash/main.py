@@ -7,6 +7,8 @@ import requests
 import os
 import argparse
 import json
+import sqlite3
+import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 from PIL import Image, ImageDraw
@@ -17,6 +19,9 @@ import base64
 DEFAULT_NIGHTSCOUT_PORT = "80"
 DEFAULT_USER_TOKEN = os.environ.get("NIGHTSCOUT_USER_TOKEN", "")
 DEFAULT_BIND_PORT = 5000
+
+# Configuration for the Archiver Database
+DEFAULT_DB_FILE = 'running_averages.sqlite'
 
 def parse_bind_address(bind_address):
     """Parse bind address in host or host:port format
@@ -71,6 +76,75 @@ def load_credentials(credential_file):
         raise ValueError(f"Credential file not found: {credential_file}")
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in credential file: {e}")
+
+# --- SQLite Reader Class ---
+
+class SQLiteHistoryReader:
+    """Read-only client for the running averages database."""
+    def __init__(self, db_file=DEFAULT_DB_FILE):
+        self.db_file = db_file
+        if not Path(self.db_file).exists():
+            print(f"Warning: History database file '{self.db_file}' not found. Statistical metrics may be unavailable.")
+
+    def get_tod_data(self, current_time_ms, num_days=30, minutes_window=20):
+        """
+        Retrieves all historical SGV values and unique date strings within a time-of-day window 
+        from the last N days.
+
+        Returns: (historical_sgv_values, unique_dates_count)
+        """
+        if not Path(self.db_file).exists():
+            return [], 0
+
+        current_dt = datetime.datetime.fromtimestamp(current_time_ms / 1000)
+        # Calculate minute_of_day for the current reading (0-1439)
+        current_minute_of_day = current_dt.hour * 60 + current_dt.minute
+        
+        # Define the minute window bounds (e.g., minutes_window=20 means ±10 min)
+        half_window = minutes_window // 2
+        min_minute = current_minute_of_day - half_window
+        max_minute = current_minute_of_day + half_window
+        
+        sgv_values = []
+        date_strings = set()
+
+        try:
+            conn = sqlite3.connect(self.db_file)
+            c = conn.cursor()
+
+            # Select the minute average and the date string
+            # The OFFSET 1 ensures we skip today's potentially incomplete data
+            c.execute("""
+                SELECT date_str, avg_sgv
+                FROM running_averages
+                WHERE date_str IN (
+                    -- Subquery to select the date strings of the last N full days archived
+                    SELECT DISTINCT date_str FROM running_averages 
+                    ORDER BY date_str DESC LIMIT ? OFFSET 1
+                )
+                AND (
+                    (minute_of_day >= ? AND minute_of_day <= ?) OR
+                    -- Handle wrap-around (e.g., 23:55 to 00:05)
+                    (minute_of_day >= ? OR minute_of_day <= ?)
+                )
+                AND avg_sgv != 0 -- Exclude placeholder entries
+            """, (num_days, min_minute, max_minute, 
+                  1440 + min_minute, max_minute - 1440))
+                  
+            results = c.fetchall()
+            conn.close()
+            
+            for date_str, avg_sgv in results:
+                sgv_values.append(avg_sgv)
+                date_strings.add(date_str)
+            
+            return sgv_values, len(date_strings)
+
+        except sqlite3.Error as e:
+            print(f"SQLite query error: {e}")
+            return [], 0
+
+# --- Image Generation and HTML (Unchanged) ---
 
 def generate_sparkline_png(data_points, width, height):
     """Generate a sparkline as a PNG image and return as base64 string
@@ -498,6 +572,9 @@ HTML_TEMPLATE = """
                                 updateStats(data.stats);
                             }
                             
+                            // NOTE TO USER: You will need to add logic here to display the
+                            // stats.tod_status_message (e.g., "BEST") on the dashboard.
+                            
                             errorElem.style.display = 'none';
                         } catch (e) {
                             errorElem.textContent = 'Error: ' + e.message;
@@ -550,6 +627,9 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
     app.config['GLUCOSE_CACHE'] = []
     app.config['CACHE_INITIALIZED'] = False
     
+    # Initialize the read-only history client
+    app.config['HISTORY_READER'] = SQLiteHistoryReader()
+    
     @app.route('/')
     def index():
         return render_template_string(HTML_TEMPLATE)
@@ -587,8 +667,6 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 current_time = latest[0].get('date')
                 
                 # Calculate midnight today (00:00 local time)
-                # Note: current_time is in milliseconds since epoch
-                import datetime
                 current_dt = datetime.datetime.fromtimestamp(current_time / 1000)
                 midnight_today = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                 midnight_ms = int(midnight_today.timestamp() * 1000)
@@ -764,7 +842,6 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
             }
             
             # Full day chart: all data since midnight
-            import datetime
             current_dt = datetime.datetime.fromtimestamp(current_time / 1000)
             midnight_today = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             midnight_ms = int(midnight_today.timestamp() * 1000)
@@ -800,11 +877,67 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 percent_below_180 = 0
                 min_glucose = None
                 max_glucose = None
+
+            # ----------------------------------------------------
+            # 4. Calculation of Time-of-Day Metrics
+            # ----------------------------------------------------
+            history_reader = app.config['HISTORY_READER']
+            
+            # Configuration for Quantile/Rank
+            num_days_quantile = 30 
+            quantile_window = 20 # ±10 minutes (10 minutes before to 10 minutes after)
+
+            # Fetch historical data
+            history_values, total_unique_days_in_window = history_reader.get_tod_data(
+                current_time, 
+                num_days=num_days_quantile, 
+                minutes_window=quantile_window
+            )
+            
+            # Initialize all statistical outputs
+            tod_avg_7day = None
+            quantile_rank = None
+            lower_data_points_count = 0
+            is_best_in_history = False
+            min_historical_value = None
+            tod_status_message = "Insufficient Data"
+
+            if history_values and current_value:
+                
+                # Calculate 7-Day Average (using the available history values)
+                if history_values:
+                    tod_avg_7day = round(sum(history_values) / len(history_values)) 
+                
+                # 1. Determine the lowest historical value in the window
+                min_historical_value = min(history_values)
+                
+                # 2. Check if current value is the 'Best' (lowest)
+                is_best_in_history = (current_value <= min_historical_value)
+
+                if is_best_in_history:
+                    # PRIORITIZED DISPLAY: If we are the best, set the message to BEST
+                    tod_status_message = "BEST"
+                    quantile_rank = 0 # Conventionally, the minimum is the 0th percentile
+                else:
+                    # 3. Calculate Quantile Rank if we are NOT the best
+                    lower_data_points_count = sum(1 for v in history_values if v < current_value)
+                    total_data_points = len(history_values)
+                    quantile_rank = round((lower_data_points_count / total_data_points) * 100)
+                    
+                    # 4. Set status message based on quantile rank
+                    if quantile_rank < 10:
+                        tod_status_message = "Excellent"
+                    elif quantile_rank < 50:
+                        tod_status_message = "Below Average"
+                    else:
+                        tod_status_message = "Above Average"
+
             
             if not production:
                 print(f"Cache size: {len(cache)} entries")
                 print(f"< 100: {percent_below_100}%, < 180: {percent_below_180}%")
             
+            # Combine all results into the final JSON response
             return jsonify({
                 "value": current_value or '--',
                 "timestamp": current_entry.get('dateString'),
@@ -817,7 +950,18 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     "percent_below_100": percent_below_100,
                     "percent_below_180": percent_below_180,
                     "min_glucose": min_glucose,
-                    "max_glucose": max_glucose
+                    "max_glucose": max_glucose,
+                    
+                    # ADDED TIME-OF-DAY STATS
+                    "tod_avg_7day": tod_avg_7day,
+                    "tod_quantile_days": num_days_quantile,
+                    "tod_quantile_window_minutes": quantile_window,
+                    "total_unique_days_in_window": total_unique_days_in_window,
+                    "lower_data_points_count": lower_data_points_count,
+                    "min_historical_value": min_historical_value,
+                    "current_quantile_rank": quantile_rank,
+                    "is_best_in_history": is_best_in_history,
+                    "tod_status_message": tod_status_message 
                 }
             })
             
