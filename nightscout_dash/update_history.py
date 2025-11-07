@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Script to periodically fetch historical Nightscout data and calculate the minute-by-minute
-running averages for each day, storing them in the 'running_averages' table within 
-'running_averages.sqlite'. Designed to be run chronically by Circus.
+Script to fetch historical Nightscout data, calculate minute-by-minute running averages
+for each day, and store them in the 'running_averages' table within 'running_averages.sqlite'.
+
+This script runs a full historical backfill in a single execution until it is caught up 
+to yesterday's complete data.
 """
 import requests
 import json
@@ -83,6 +85,25 @@ class SQLiteArchiver:
         conn.close()
         return result[0] if result and result[0] else None
 
+    def mark_day_as_checked(self, date_str):
+        """Inserts a single placeholder entry (minute 0, avg_sgv 0) to mark an empty day as processed."""
+        conn = sqlite3.connect(self.db_file)
+        c = conn.cursor()
+        
+        try:
+            # INSERT OR IGNORE avoids errors if the script is manually run on the same empty day
+            c.execute("""
+                INSERT OR IGNORE INTO running_averages (date_str, minute_of_day, avg_sgv)
+                VALUES (?, 0, 0)
+            """, (date_str,))
+            conn.commit()
+            print(f"Archiver: Successfully marked empty day {date_str} as checked.")
+        except sqlite3.Error as e:
+            print(f"SQLite error during placeholder insert: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
     def insert_minute_averages(self, date_str, entries):
         """Calculates minute averages for the day and inserts them."""
         
@@ -96,13 +117,13 @@ class SQLiteArchiver:
                 continue
             
             entry_dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000)
-            minute_of_day = entry_dt.hour * 60 + entry_dt.minute # 0 to 1439
+            minute_of_day = entry_dt.hour * 60 + entry_dt.minute
             
             minute_data[minute_of_day]['sum'] += sgv
             minute_data[minute_of_day]['count'] += 1
 
         if not minute_data:
-            print(f"Archiver: No valid SGV data to average for {date_str}.")
+            self.mark_day_as_checked(date_str)
             return 0
 
         data_to_insert = []
@@ -114,7 +135,6 @@ class SQLiteArchiver:
         c = conn.cursor()
         
         try:
-            # INSERT OR REPLACE ensures idempotency (no duplicates, handles re-runs)
             c.executemany("""
                 INSERT OR REPLACE INTO running_averages (date_str, minute_of_day, avg_sgv)
                 VALUES (?, ?, ?)
@@ -138,7 +158,6 @@ def main():
     parser.add_argument('nightscout_server', help='Nightscout URL (e.g., https://myserver.herokuapp.com)')
     parser.add_argument('--credential-file', help='Path to a JSON file containing the Nightscout user_token')
     parser.add_argument('--db-file', default=DEFAULT_DB_FILE, help='Name of the SQLite database file')
-    # NEW ARGUMENT
     parser.add_argument('--initial-days-back', type=int, default=DEFAULT_INITIAL_BACKFILL_DAYS, 
                         help='Number of days back to start checking if history database is empty.')
     
@@ -162,61 +181,64 @@ def main():
     url = f"{scheme}://{nightscout_host}:{nightscout_port}/api/v1/entries.json"
     archiver = SQLiteArchiver(args.db_file)
     
-    # 2. Sequential Catch-up Logic
-    now_dt = datetime.datetime.now()
-    # The last day guaranteed to be complete is yesterday.
-    date_of_last_full_day = (now_dt - datetime.timedelta(days=1)).date()
-    
-    # Check if we already have data
-    latest_date_str = archiver.get_latest_date()
-    
-    if latest_date_str:
-        # If data exists, start checking the day after the latest recorded date
-        latest_dt = datetime.datetime.strptime(latest_date_str, '%Y-%m-%d').date()
-        next_date_to_fetch = latest_dt + datetime.timedelta(days=1)
-    else:
-        # --- INITIAL START DATE LOGIC ---
-        # Database is empty. Start checking from the specified number of days back.
-        print(f"Archiver: History DB is empty. Starting backfill check {args.initial_days_back} days ago.")
-        start_dt = now_dt - datetime.timedelta(days=args.initial_days_back)
-        next_date_to_fetch = start_dt.date()
+    # 2. Sequential Catch-up Logic in a loop
+    while True:
+        now_dt = datetime.datetime.now()
+        # The last day guaranteed to be complete is yesterday.
+        date_of_last_full_day = (now_dt - datetime.timedelta(days=1)).date()
         
-    
-    if next_date_to_fetch <= date_of_last_full_day:
+        latest_date_str = archiver.get_latest_date()
         
-        date_str = next_date_to_fetch.strftime('%Y-%m-%d')
+        if latest_date_str:
+            latest_dt = datetime.datetime.strptime(latest_date_str, '%Y-%m-%d').date()
+            next_date_to_fetch = latest_dt + datetime.timedelta(days=1)
+        else:
+            # Database is empty. Start checking from the specified number of days back.
+            print(f"Archiver: History DB is empty. Starting backfill check {args.initial_days_back} days ago.")
+            start_dt = now_dt - datetime.timedelta(days=args.initial_days_back)
+            next_date_to_fetch = start_dt.date()
         
-        # Calculate timestamps for the full day to fetch
-        midnight_fetch_day = datetime.datetime.combine(next_date_to_fetch, datetime.time())
-        midnight_next_day = midnight_fetch_day + datetime.timedelta(days=1)
         
-        params = {
-            "find[date][$lt]": int(midnight_next_day.timestamp() * 1000), 
-            "find[date][$gte]": int(midnight_fetch_day.timestamp() * 1000),
-            "count": 300 
-        }
-        
-        print(f"Archiver: Attempting to fetch and archive missing minute averages for: {date_str}...")
-        
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=15)
-            response.raise_for_status()
-            day_entries = response.json()
+        if next_date_to_fetch <= date_of_last_full_day:
             
-            # This is the single day insertion point.
-            if day_entries:
-                archiver.insert_minute_averages(date_str, day_entries)
-            else:
-                print(f"Archiver: No entries found for {date_str}.")
+            date_str = next_date_to_fetch.strftime('%Y-%m-%d')
+            
+            # Calculate timestamps for the full day to fetch
+            midnight_fetch_day = datetime.datetime.combine(next_date_to_fetch, datetime.time())
+            midnight_next_day = midnight_fetch_day + datetime.timedelta(days=1)
+            
+            params = {
+                "find[date][$lt]": int(midnight_next_day.timestamp() * 1000), 
+                "find[date][$gte]": int(midnight_fetch_day.timestamp() * 1000),
+                "count": 300 
+            }
+            
+            print(f"Archiver: Attempting to fetch and archive missing minute averages for: {date_str}...")
+            
+            try:
+                response = requests.get(url, headers=headers, params=params, timeout=15)
+                response.raise_for_status()
+                day_entries = response.json()
                 
-        except requests.RequestException as e:
-            print(f"Archiver: ERROR fetching data for {date_str}: {e}. Will retry on next run.")
+                # Insert data or mark the day as checked if no entries are returned
+                if day_entries:
+                    archiver.insert_minute_averages(date_str, day_entries)
+                else:
+                    archiver.mark_day_as_checked(date_str)
             
-        except Exception as e:
-            print(f"Archiver: An unexpected error occurred: {e}")
-
-    else:
-        print(f"Archiver: History is current up to {date_of_last_full_day}. Nothing to do.")
+            except requests.RequestException as e:
+                # If there is a network error, stop the loop and exit the script
+                print(f"Archiver: FATAL ERROR fetching data for {date_str}: {e}. Stopping backfill.")
+                break
+                
+            except Exception as e:
+                print(f"Archiver: An unexpected error occurred: {e}. Stopping backfill.")
+                break
+                
+        else:
+            # Exit loop when next_date_to_fetch is not yet a full past day (i.e., today or tomorrow)
+            print(f"Archiver: History is current up to {date_of_last_full_day}. Finished backfill.")
+            break 
 
 if __name__ == '__main__':
     main()
