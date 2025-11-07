@@ -466,11 +466,23 @@ HTML_TEMPLATE = """
                 maxElem.textContent = '--';
             }
 
-            // ADDED: Update Quantile Rank
+            // MODIFIED: Update Quantile Rank and add (of N) count.
             var rankElem = document.getElementById('quantile-rank');
             if (rankElem && stats.current_quantile_rank !== null && stats.current_quantile_rank !== undefined) {
-                // Display the rank and the status message (e.g., "10% (Excellent)")
-                rankElem.textContent = stats.current_quantile_rank + '% (' + stats.tod_status_message + ')';
+                
+                var rankText = stats.current_quantile_rank + '%';
+                
+                // Add the (of N) count
+                if (stats.total_data_points !== null && stats.total_data_points !== undefined) {
+                    rankText += ' (of ' + stats.total_data_points + ')';
+                }
+                
+                // Add the status message if present (e.g., "Excellent")
+                if (stats.tod_status_message) {
+                    rankText += ' (' + stats.tod_status_message + ')';
+                }
+                
+                rankElem.textContent = rankText;
             } else if (rankElem) {
                 rankElem.textContent = '--';
             }
@@ -909,6 +921,7 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
             tod_avg_7day = None
             quantile_rank = None
             lower_data_points_count = 0
+            total_data_points = len(history_values) # N value for (of N)
             is_best_in_history = False
             min_historical_value = None
             tod_status_message = "Insufficient Data"
@@ -917,7 +930,7 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 
                 # Calculate 7-Day Average (using the available history values)
                 if history_values:
-                    tod_avg_7day = round(sum(history_values) / len(history_values)) 
+                    tod_avg_7day = round(sum(history_values) / total_data_points) 
                 
                 # 1. Determine the lowest historical value in the window
                 min_historical_value = min(history_values)
@@ -932,16 +945,16 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                 else:
                     # 3. Calculate Quantile Rank if we are NOT the best
                     lower_data_points_count = sum(1 for v in history_values if v < current_value)
-                    total_data_points = len(history_values)
+                    
                     quantile_rank = round((lower_data_points_count / total_data_points) * 100)
                     
-                    # 4. Set status message based on quantile rank
+                    # 4. Set status message based on quantile rank, excluding "Above Average"
                     if quantile_rank < 10:
                         tod_status_message = "Excellent"
                     elif quantile_rank < 50:
                         tod_status_message = "Below Average"
                     else:
-                        tod_status_message = "Above Average"
+                        tod_status_message = "" # No message for 50%+
 
             
             if not production:
@@ -969,6 +982,7 @@ def create_app(nightscout_scheme, nightscout_host, nightscout_port, user_token, 
                     "tod_quantile_window_minutes": quantile_window,
                     "total_unique_days_in_window": total_unique_days_in_window,
                     "lower_data_points_count": lower_data_points_count,
+                    "total_data_points": total_data_points, # <-- ADDED FOR (of N)
                     "min_historical_value": min_historical_value,
                     "current_quantile_rank": quantile_rank,
                     "is_best_in_history": is_best_in_history,
